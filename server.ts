@@ -2,152 +2,223 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, GetCommand, ScanCommand, UpdateCommand, QueryCommand } from "@aws-sdk/lib-dynamodb";
+import {
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  PutCommand,
+  GetCommand,
+  ScanCommand,
+  UpdateCommand,
+} from "@aws-sdk/lib-dynamodb";
 import { v4 as uuidv4 } from "uuid";
+import bcrypt from "bcryptjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Initialize DynamoDB Client
-// In a real AWS environment, credentials would be picked up automatically.
-// For local development, you might need to configure AWS credentials.
+/* =========================
+   DynamoDB Configuration
+========================= */
+
+if (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY) {
+  console.error("❌ AWS credentials missing in Vercel environment variables");
+}
+
 const client = new DynamoDBClient({
   region: process.env.AWS_REGION || "ap-southeast-1",
-  // endpoint: "http://localhost:8000" // Uncomment for local DynamoDB
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  },
 });
+
 const docClient = DynamoDBDocumentClient.from(client);
 
-const USERS_TABLE = process.env.USERS_TABLE || "dti-users";
-const APPLICATIONS_TABLE = process.env.APPLICATIONS_TABLE || "dti-applications";
+const USERS_TABLE = process.env.USERS_TABLE!;
+const APPLICATIONS_TABLE = process.env.APPLICATIONS_TABLE!;
+
+/* =========================
+   Start Server
+========================= */
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
 
   app.use(express.json());
 
-  // API Routes
+  /* =========================
+     AUTH REGISTER
+  ========================= */
   app.post("/api/auth/register", async (req, res) => {
-    const { email, password, role } = req.body;
-    const id = uuidv4();
     try {
-      // Note: In a real app, use Cognito for auth. This is a simplified demo.
-      await docClient.send(new PutCommand({
-        TableName: USERS_TABLE,
-        Item: {
-          id,
-          email,
-          password, // In a real app, hash this!
-          role: role || 'user'
-        },
-        ConditionExpression: "attribute_not_exists(email)" // Basic check, though DynamoDB doesn't natively enforce unique on non-keys easily without a separate table or using email as PK.
-      }));
-      res.json({ id, email, role: role || 'user' });
+      const { email, password, role } = req.body;
+
+      if (!email || !password) {
+        return res.status(400).json({ error: "Email and password required" });
+      }
+
+      // Check if user exists
+      const existingUser = await docClient.send(
+        new GetCommand({
+          TableName: USERS_TABLE,
+          Key: { email },
+        })
+      );
+
+      if (existingUser.Item) {
+        return res.status(400).json({ error: "User already exists" });
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      await docClient.send(
+        new PutCommand({
+          TableName: USERS_TABLE,
+          Item: {
+            email,
+            password: hashedPassword,
+            role: role || "user",
+            createdAt: new Date().toISOString(),
+          },
+        })
+      );
+
+      res.json({ email, role: role || "user" });
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("Register Error:", err);
+      res.status(500).json({ error: "Registration failed" });
     }
   });
 
+  /* =========================
+     AUTH LOGIN
+  ========================= */
   app.post("/api/auth/login", async (req, res) => {
-    const { email, password } = req.body;
     try {
-      // In a real app, use Cognito. Here we scan for simplicity (NOT for production).
-      // A better design would use email as the Partition Key.
-      const result = await docClient.send(new ScanCommand({
-        TableName: USERS_TABLE,
-        FilterExpression: "email = :email AND password = :password",
-        ExpressionAttributeValues: {
-          ":email": email,
-          ":password": password
-        }
-      }));
+      const { email, password } = req.body;
 
-      const user = result.Items?.[0];
-      if (user) {
-        res.json({ id: user.id, email: user.email, role: user.role });
-      } else {
-        res.status(401).json({ error: "Invalid credentials" });
+      const result = await docClient.send(
+        new GetCommand({
+          TableName: USERS_TABLE,
+          Key: { email },
+        })
+      );
+
+      const user = result.Item;
+
+      if (!user) {
+        return res.status(401).json({ error: "Invalid credentials" });
       }
+
+      const passwordMatch = await bcrypt.compare(password, user.password);
+
+      if (!passwordMatch) {
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+
+      res.json({
+        email: user.email,
+        role: user.role,
+      });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error("Login Error:", err);
+      res.status(500).json({ error: "Login failed" });
     }
   });
 
+  /* =========================
+     GET APPLICATIONS
+  ========================= */
   app.get("/api/applications", async (req, res) => {
-    const userId = req.query.userId as string;
     try {
-      let apps;
-      if (userId) {
-        // Query using a GSI on userId, or scan if no GSI (scan used here for simplicity in demo)
-        const result = await docClient.send(new ScanCommand({
+      const result = await docClient.send(
+        new ScanCommand({
           TableName: APPLICATIONS_TABLE,
-          FilterExpression: "userId = :userId",
-          ExpressionAttributeValues: {
-            ":userId": userId
-          }
-        }));
-        apps = result.Items || [];
-      } else {
-        const result = await docClient.send(new ScanCommand({
-          TableName: APPLICATIONS_TABLE
-        }));
-        apps = result.Items || [];
-      }
-      
-      // Sort by createdAt descending
-      apps.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      
+        })
+      );
+
+      const apps = result.Items || [];
+
+      apps.sort(
+        (a: any, b: any) =>
+          new Date(b.createdAt).getTime() -
+          new Date(a.createdAt).getTime()
+      );
+
       res.json(apps);
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error("Fetch Applications Error:", err);
+      res.status(500).json({ error: "Failed to fetch applications" });
     }
   });
 
+  /* =========================
+     CREATE APPLICATION
+  ========================= */
   app.post("/api/applications", async (req, res) => {
-    const { userId, ownerName, businessName, businessType, address } = req.body;
-    const id = uuidv4();
     try {
-      await docClient.send(new PutCommand({
-        TableName: APPLICATIONS_TABLE,
-        Item: {
-          id,
-          userId,
-          ownerName,
-          businessName,
-          businessType,
-          address,
-          status: 'Pending',
-          createdAt: new Date().toISOString()
-        }
-      }));
-      res.json({ id, status: 'Pending' });
+      const { userId, ownerName, businessName, businessType, address } =
+        req.body;
+
+      const id = uuidv4();
+
+      await docClient.send(
+        new PutCommand({
+          TableName: APPLICATIONS_TABLE,
+          Item: {
+            id,
+            userId,
+            ownerName,
+            businessName,
+            businessType,
+            address,
+            status: "Pending",
+            createdAt: new Date().toISOString(),
+          },
+        })
+      );
+
+      res.json({ id, status: "Pending" });
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("Create Application Error:", err);
+      res.status(500).json({ error: "Failed to create application" });
     }
   });
 
+  /* =========================
+     UPDATE APPLICATION STATUS
+  ========================= */
   app.put("/api/applications/:id/status", async (req, res) => {
-    const { id } = req.params;
-    const { status } = req.body;
     try {
-      await docClient.send(new UpdateCommand({
-        TableName: APPLICATIONS_TABLE,
-        Key: { id },
-        UpdateExpression: "set #status = :status",
-        ExpressionAttributeNames: {
-          "#status": "status"
-        },
-        ExpressionAttributeValues: {
-          ":status": status
-        }
-      }));
+      const { id } = req.params;
+      const { status } = req.body;
+
+      await docClient.send(
+        new UpdateCommand({
+          TableName: APPLICATIONS_TABLE,
+          Key: { id },
+          UpdateExpression: "set #status = :status",
+          ExpressionAttributeNames: {
+            "#status": "status",
+          },
+          ExpressionAttributeValues: {
+            ":status": status,
+          },
+        })
+      );
+
       res.json({ success: true });
     } catch (err: any) {
-      res.status(400).json({ error: err.message });
+      console.error("Update Application Status Error:", err);
+      res.status(500).json({ error: "Failed to update status" });
     }
   });
 
-  // Vite middleware for development
+  /* =========================
+     VITE MIDDLEWARE
+  ========================= */
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -162,7 +233,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
