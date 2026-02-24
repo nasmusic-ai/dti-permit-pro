@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { motion } from 'motion/react';
+import { motion } from 'framer-motion';
 import { User, Lock, Mail } from 'lucide-react';
 
 export default function LoginPage() {
@@ -9,7 +8,6 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -21,14 +19,11 @@ export default function LoginPage() {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, role: 'user' })
+        body: JSON.stringify({ email, password, role: 'user' }),
       });
-      
+
       const data = await res.json();
-      
-      if (!res.ok) {
-        throw new Error(data.error || 'Authentication failed');
-      }
+      if (!res.ok) throw new Error(data.error || 'Authentication failed');
 
       localStorage.setItem('user', JSON.stringify(data));
       window.location.href = '/dashboard';
@@ -41,7 +36,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex-1 flex items-center justify-center p-4 bg-slate-50">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="w-full max-w-md bg-white rounded-2xl shadow-xl overflow-hidden"
@@ -55,7 +50,9 @@ export default function LoginPage() {
               {isRegister ? 'Create an Account' : 'Welcome Back'}
             </h2>
             <p className="text-slate-500 mt-2">
-              {isRegister ? 'Sign up to apply for your business permit' : 'Log in to manage your applications'}
+              {isRegister
+                ? 'Sign up to apply for your business permit'
+                : 'Log in to manage your applications'}
             </p>
           </div>
 
@@ -67,7 +64,7 @@ export default function LoginPage() {
 
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Email Address</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
                   <Mail size={18} />
@@ -82,7 +79,7 @@ export default function LoginPage() {
                 />
               </div>
             </div>
-            
+
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Password</label>
               <div className="relative">
@@ -107,15 +104,17 @@ export default function LoginPage() {
             >
               {loading ? (
                 <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              ) : isRegister ? (
+                'Sign Up'
               ) : (
-                isRegister ? 'Sign Up' : 'Log In'
+                'Log In'
               )}
             </button>
           </form>
 
           <div className="mt-6 text-center text-sm text-slate-600">
             {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
-            <button 
+            <button
               onClick={() => setIsRegister(!isRegister)}
               className="text-blue-600 font-semibold hover:underline"
             >
@@ -123,9 +122,9 @@ export default function LoginPage() {
             </button>
           </div>
         </div>
-        
+
         <div className="bg-slate-50 p-4 border-t border-slate-100 text-center text-xs text-slate-500">
-          Secured by AWS Cognito &bull; Data encrypted in transit
+          Secured by AWS DynamoDB &bull; Data encrypted in transit
         </div>
       </motion.div>
     </div>
